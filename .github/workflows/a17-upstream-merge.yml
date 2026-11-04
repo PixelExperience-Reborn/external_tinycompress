@@ -1,0 +1,61 @@
+name: Android17 tinycompress historical PE + upstream source merge
+
+on:
+  push:
+    branches:
+      - integrate/a17-tinycompress-20261105
+    paths:
+      - .github/workflows/a17-upstream-merge.yml
+
+permissions:
+  contents: write
+
+jobs:
+  merge-android17:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full PE history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Merge the exact official Android17 release into historical PE source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/integrate/a17-tinycompress-20261105"
+          git config user.name "PixelExperience-Reborn CI"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add aosp https://android.googlesource.com/platform/external/tinycompress
+          git fetch --no-tags aosp refs/tags/android-17.0.0_r1
+          upstream="$(git rev-parse FETCH_HEAD^{commit})"
+          test "$upstream" = "8a17f751b26868dc9a1f968f50f5ab18364c1e53"
+          if ! git merge --no-ff --no-edit --allow-unrelated-histories -m "merge: integrate official Android 17 tinycompress with PE history" "$upstream"; then
+            echo "::error::Upstream merge conflicts must be resolved manually; no source was pushed"
+            git status --short
+            exit 1
+          fi
+          git merge-base --is-ancestor "$upstream" HEAD
+          git diff --check HEAD^1 HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          bp = Path("Android.bp").read_text()
+          api = Path("compress.c").read_text()
+          plugin = Path("compress_plugin.c").read_text()
+          assert re.search(r'name:\s*"libtinycompress"', bp)
+          assert re.search(r'\bint\s+compress_set_codec_params\s*\(', api)
+          set_params = plugin.split("static int compress_plug_set_params", 1)[1].split("static int ", 1)[0]
+          assert "COMPRESS_PLUG_STATE_SETUP" in set_params, (
+              "Old PE plugin codec-param transition was lost in the upstream merge")
+          print("PASS: official Android17 source ancestry, PE codec API and plugin state")
+          PY
+          # A throwaway integration branch only; never update seventeen or the staged ROM manifest.
+          git push origin HEAD:refs/heads/integrate/a17-tinycompress-20261105
+
+      - name: Review boundary
+        if: always()
+        run: |
+          echo "Source merge is NOT Android17 Soong/audio HAL or physical mondrian testing."
+          echo "Keep this branch out of staged manifests until Soong and codec ABI are reviewed."
